@@ -13,6 +13,7 @@ from PySide6.QtGui import (
     QPen,
     QPixmap,
     QPolygonF,
+    QWheelEvent,
 )
 from PySide6.QtWidgets import QWidget
 
@@ -25,6 +26,7 @@ class PdfCanvas(QWidget):
     annotations_changed = Signal()
     previous_page_requested = Signal()
     next_page_requested = Signal()
+    zoom_requested = Signal(int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -171,6 +173,22 @@ class PdfCanvas(QWidget):
 
         self._current_stroke = None
         self.update()
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        """Request zoom in or out when the mouse wheel moves over the PDF page."""
+        if self._pixmap is None:
+            event.ignore()
+            return
+
+        delta_y = event.angleDelta().y()
+        if delta_y > 0:
+            self.zoom_requested.emit(1)
+            event.accept()
+        elif delta_y < 0:
+            self.zoom_requested.emit(-1)
+            event.accept()
+        else:
+            event.ignore()
 
     def _to_page_point(self, event: QMouseEvent) -> Point:
         """Convert widget coordinates to unscaled PDF page coordinates."""

@@ -23,10 +23,15 @@ from core.annotation_store import AnnotationStore
 from core.pdf_document import PdfDocument
 from core.render_service import RenderService
 from widgets.pdf_canvas import PdfCanvas
+from widgets.thumbnail_panel import ThumbnailPanel
 
 
 class MainWindow(QMainWindow):
     """Build the app window and connect user actions to PDF behavior."""
+
+    MIN_ZOOM = 0.5
+    MAX_ZOOM = 4.0
+    ZOOM_STEP = 0.1
 
     def __init__(self) -> None:
         super().__init__()
@@ -42,6 +47,9 @@ class MainWindow(QMainWindow):
         self.canvas.annotations_changed.connect(self._remember_current_annotations)
         self.canvas.previous_page_requested.connect(self.previous_page)
         self.canvas.next_page_requested.connect(self.next_page)
+        self.canvas.zoom_requested.connect(self.handle_zoom_request)
+        self.thumbnail_panel = ThumbnailPanel()
+        self.thumbnail_panel.page_selected.connect(self.go_to_page)
 
         self.page_label = QLabel("No PDF")
         self.page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -50,7 +58,14 @@ class MainWindow(QMainWindow):
         self.scroll_area.setWidget(self.canvas)
         self.scroll_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.scroll_area.setWidgetResizable(False)
-        self.setCentralWidget(self.scroll_area)
+
+        central_widget = QWidget()
+        central_layout = QHBoxLayout(central_widget)
+        central_layout.setContentsMargins(0, 0, 0, 0)
+        central_layout.setSpacing(0)
+        central_layout.addWidget(self.scroll_area, 1)
+        central_layout.addWidget(self.thumbnail_panel)
+        self.setCentralWidget(central_widget)
 
         self._build_top_toolbar()
         self._build_drawing_toolbar()
@@ -181,14 +196,34 @@ class MainWindow(QMainWindow):
         try:
             self.document.open(file_name)
             self.store.load(file_name)
-            self.zoom = max(0.25, min(self.store.zoom, 5.0))
+            self.zoom = self._clamp_zoom(self.store.zoom)
             self.document.set_page(self.store.last_page)
+            self.thumbnail_panel.set_document(
+                self.document.document,
+                self.renderer,
+                self.document.current_page,
+            )
             self._render_current_page()
         except Exception as error:
             self.document.close()
             self.canvas.clear()
+            self.thumbnail_panel.clear()
             QMessageBox.critical(self, "PDF 열기 실패", f"PDF를 열 수 없습니다.\n{error}")
 
+        self._update_controls()
+
+    def go_to_page(self, page_index: int) -> None:
+        """Move to a page selected from the thumbnail panel."""
+        if not self.document.is_open:
+            return
+
+        if page_index == self.document.current_page:
+            self.thumbnail_panel.set_current_page(self.document.current_page)
+            return
+
+        self._remember_current_annotations()
+        self.document.set_page(page_index)
+        self._render_current_page()
         self._update_controls()
 
     def previous_page(self) -> None:
@@ -213,23 +248,42 @@ class MainWindow(QMainWindow):
 
     def zoom_in(self) -> None:
         """Increase the PDF rendering zoom."""
-        if not self.document.is_open:
-            return
-
-        self._remember_current_annotations()
-        self.zoom = min(self.zoom + 0.25, 5.0)
-        self._render_current_page()
-        self._update_controls()
+        self._change_zoom(self.ZOOM_STEP)
 
     def zoom_out(self) -> None:
         """Decrease the PDF rendering zoom."""
+        self._change_zoom(-self.ZOOM_STEP)
+
+    def handle_zoom_request(self, direction: int) -> None:
+        """Handle a zoom request emitted by the PDF canvas wheel event."""
+        if direction > 0:
+            self.zoom_in()
+        elif direction < 0:
+            self.zoom_out()
+
+    def _change_zoom(self, delta: float) -> None:
+        """Change zoom safely and re-render the current page."""
         if not self.document.is_open:
             return
 
-        self._remember_current_annotations()
-        self.zoom = max(self.zoom - 0.25, 0.25)
-        self._render_current_page()
-        self._update_controls()
+        new_zoom = self._clamp_zoom(self.zoom + delta)
+        if new_zoom == self.zoom:
+            return
+
+        old_zoom = self.zoom
+        try:
+            self._remember_current_annotations()
+            self.zoom = new_zoom
+            # TODO: Keep the mouse position fixed while zooming for a smoother feel.
+            self._render_current_page()
+            self._update_controls()
+        except Exception:
+            self.zoom = old_zoom
+            self._update_controls()
+
+    def _clamp_zoom(self, zoom: float) -> float:
+        """Keep zoom inside the supported range."""
+        return max(self.MIN_ZOOM, min(float(zoom), self.MAX_ZOOM))
 
     def save_notes(self) -> None:
         """Save annotations, zoom, and the last-read page to JSON."""
@@ -261,6 +315,7 @@ class MainWindow(QMainWindow):
         )
         annotations = self.store.get_page_annotations(self.document.current_page)
         self.canvas.set_page(pixmap, self.zoom, annotations)
+        self.thumbnail_panel.set_current_page(self.document.current_page)
 
     def _remember_current_annotations(self) -> None:
         """Copy the canvas annotations into the JSON store state."""
