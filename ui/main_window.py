@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSplitter,
     QSpinBox,
     QToolBar,
     QWidget,
@@ -22,6 +23,7 @@ from PySide6.QtWidgets import (
 from core.annotation_store import AnnotationStore
 from core.pdf_document import PdfDocument
 from core.render_service import RenderService
+from widgets.page_memo_panel import PageMemoPanel
 from widgets.pdf_canvas import PdfCanvas
 from widgets.thumbnail_panel import ThumbnailPanel
 
@@ -48,6 +50,8 @@ class MainWindow(QMainWindow):
         self.canvas.previous_page_requested.connect(self.previous_page)
         self.canvas.next_page_requested.connect(self.next_page)
         self.canvas.zoom_requested.connect(self.handle_zoom_request)
+        self.memo_panel = PageMemoPanel()
+        self.memo_panel.memo_changed.connect(self._on_memo_changed)
         self.thumbnail_panel = ThumbnailPanel()
         self.thumbnail_panel.page_selected.connect(self.go_to_page)
 
@@ -59,11 +63,18 @@ class MainWindow(QMainWindow):
         self.scroll_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.scroll_area.setWidgetResizable(False)
 
+        self.content_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.content_splitter.addWidget(self.scroll_area)
+        self.content_splitter.addWidget(self.memo_panel)
+        self.content_splitter.setStretchFactor(0, 5)
+        self.content_splitter.setStretchFactor(1, 1)
+        self.content_splitter.setSizes([700, 150])
+
         central_widget = QWidget()
         central_layout = QHBoxLayout(central_widget)
         central_layout.setContentsMargins(0, 0, 0, 0)
         central_layout.setSpacing(0)
-        central_layout.addWidget(self.scroll_area, 1)
+        central_layout.addWidget(self.content_splitter, 1)
         central_layout.addWidget(self.thumbnail_panel)
         self.setCentralWidget(central_widget)
 
@@ -203,10 +214,12 @@ class MainWindow(QMainWindow):
                 self.renderer,
                 self.document.current_page,
             )
+            self.memo_panel.setEnabled(True)
             self._render_current_page()
         except Exception as error:
             self.document.close()
             self.canvas.clear()
+            self.memo_panel.clear()
             self.thumbnail_panel.clear()
             QMessageBox.critical(self, "PDF 열기 실패", f"PDF를 열 수 없습니다.\n{error}")
 
@@ -221,7 +234,7 @@ class MainWindow(QMainWindow):
             self.thumbnail_panel.set_current_page(self.document.current_page)
             return
 
-        self._remember_current_annotations()
+        self._remember_current_page_state()
         self.document.set_page(page_index)
         self._render_current_page()
         self._update_controls()
@@ -231,7 +244,7 @@ class MainWindow(QMainWindow):
         if not self.document.is_open:
             return
 
-        self._remember_current_annotations()
+        self._remember_current_page_state()
         if self.document.previous_page():
             self._render_current_page()
         self._update_controls()
@@ -241,7 +254,7 @@ class MainWindow(QMainWindow):
         if not self.document.is_open:
             return
 
-        self._remember_current_annotations()
+        self._remember_current_page_state()
         if self.document.next_page():
             self._render_current_page()
         self._update_controls()
@@ -272,7 +285,7 @@ class MainWindow(QMainWindow):
 
         old_zoom = self.zoom
         try:
-            self._remember_current_annotations()
+            self._remember_current_page_state()
             self.zoom = new_zoom
             # TODO: Keep the mouse position fixed while zooming for a smoother feel.
             self._render_current_page()
@@ -290,17 +303,17 @@ class MainWindow(QMainWindow):
         if not self.document.is_open:
             return
 
-        self._remember_current_annotations()
+        self._remember_current_page_state()
         try:
             self.store.save(self.document.current_page, self.zoom)
-            QMessageBox.information(self, "저장 완료", "필기 데이터가 저장되었습니다.")
+            QMessageBox.information(self, "저장 완료", "필기와 메모가 저장되었습니다.")
         except OSError as error:
             QMessageBox.critical(self, "저장 실패", f"필기 데이터를 저장할 수 없습니다.\n{error}")
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
         """Keep the latest in-memory annotations before the window closes."""
         if self.document.is_open:
-            self._remember_current_annotations()
+            self._remember_current_page_state()
         super().closeEvent(event)
 
     def _render_current_page(self) -> None:
@@ -316,6 +329,18 @@ class MainWindow(QMainWindow):
         annotations = self.store.get_page_annotations(self.document.current_page)
         self.canvas.set_page(pixmap, self.zoom, annotations)
         self.thumbnail_panel.set_current_page(self.document.current_page)
+        self._load_current_page_memo()
+
+    def _remember_current_page_state(self) -> None:
+        """Copy current page annotations and memo text into the store."""
+        if not self.document.is_open:
+            return
+
+        self.store.set_page_annotations(
+            self.document.current_page,
+            self.canvas.annotations(),
+        )
+        self._remember_current_memo()
 
     def _remember_current_annotations(self) -> None:
         """Copy the canvas annotations into the JSON store state."""
@@ -326,6 +351,35 @@ class MainWindow(QMainWindow):
             self.document.current_page,
             self.canvas.annotations(),
         )
+
+    def _remember_current_memo(self) -> None:
+        """Copy the memo editor text into the store for the current page."""
+        if not self.document.is_open:
+            return
+
+        self.store.set_page_memo(
+            self.document.current_page,
+            self.memo_panel.get_memo_text(),
+        )
+
+    def _load_current_page_memo(self) -> None:
+        """Load the memo text for the current page into the memo panel."""
+        if not self.document.is_open:
+            self.memo_panel.clear()
+            return
+
+        self.memo_panel.setEnabled(True)
+        self.memo_panel.set_page(
+            self.document.current_page,
+            self.store.get_page_memo(self.document.current_page),
+        )
+
+    def _on_memo_changed(self, memo_text: str) -> None:
+        """Update the current page memo as the user types."""
+        if not self.document.is_open:
+            return
+
+        self.store.set_page_memo(self.document.current_page, memo_text)
 
     def _update_color_button(self) -> None:
         """Show the active pen color on the color button."""

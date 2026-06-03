@@ -16,6 +16,7 @@ class AnnotationStore:
         self.last_page: int = 0
         self.zoom: float = 1.0
         self.annotations: dict[int, list[Annotation]] = {}
+        self.memos: dict[int, str] = {}
 
     def load(self, pdf_path: str | Path) -> None:
         """Load notes for a PDF, creating empty state when no JSON exists."""
@@ -24,6 +25,7 @@ class AnnotationStore:
         self.last_page = 0
         self.zoom = 1.0
         self.annotations = {}
+        self.memos = {}
 
         if not self.notes_path.exists():
             return
@@ -37,6 +39,7 @@ class AnnotationStore:
         self.last_page = int(data.get("last_page", 0))
         self.zoom = float(data.get("zoom", 1.0))
         self.annotations = self._parse_annotations(data.get("annotations", {}))
+        self.memos = self._parse_memos(data.get("memos", {}))
 
     def get_page_annotations(self, page_index: int) -> list[Annotation]:
         """Return a copy of the annotations for one page."""
@@ -47,6 +50,14 @@ class AnnotationStore:
     ) -> None:
         """Replace annotations for one page."""
         self.annotations[page_index] = list(annotations)
+
+    def get_page_memo(self, page_index: int) -> str:
+        """Return the saved memo text for one page."""
+        return self.memos.get(page_index, "")
+
+    def set_page_memo(self, page_index: int, memo_text: str) -> None:
+        """Replace memo text for one page."""
+        self.memos[page_index] = memo_text
 
     def save(self, last_page: int, zoom: float) -> None:
         """Write the current note state to the sidecar JSON file."""
@@ -63,6 +74,10 @@ class AnnotationStore:
             "annotations": {
                 str(page): [annotation.to_dict() for annotation in annotations]
                 for page, annotations in sorted(self.annotations.items())
+            },
+            "memos": {
+                str(page): memo_text
+                for page, memo_text in sorted(self.memos.items())
             },
         }
 
@@ -93,3 +108,21 @@ class AnnotationStore:
             ]
 
         return annotations
+
+    @staticmethod
+    def _parse_memos(raw_memos: Any) -> dict[int, str]:
+        """Convert raw JSON memo data to a page-indexed dictionary."""
+        memos: dict[int, str] = {}
+
+        if not isinstance(raw_memos, dict):
+            return memos
+
+        for page_key, memo_text in raw_memos.items():
+            try:
+                page_index = int(page_key)
+            except ValueError:
+                continue
+
+            memos[page_index] = str(memo_text)
+
+        return memos
