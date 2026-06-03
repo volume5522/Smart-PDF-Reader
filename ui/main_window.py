@@ -3,7 +3,9 @@
 from pathlib import Path
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QAction, QActionGroup, QColor
 from PySide6.QtWidgets import (
+    QColorDialog,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -12,6 +14,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSpinBox,
     QToolBar,
     QWidget,
 )
@@ -37,6 +40,8 @@ class MainWindow(QMainWindow):
 
         self.canvas = PdfCanvas()
         self.canvas.annotations_changed.connect(self._remember_current_annotations)
+        self.canvas.previous_page_requested.connect(self.previous_page)
+        self.canvas.next_page_requested.connect(self.next_page)
 
         self.page_label = QLabel("No PDF")
         self.page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -47,10 +52,11 @@ class MainWindow(QMainWindow):
         self.scroll_area.setWidgetResizable(False)
         self.setCentralWidget(self.scroll_area)
 
-        self._build_toolbar()
+        self._build_top_toolbar()
+        self._build_drawing_toolbar()
         self._update_controls()
 
-    def _build_toolbar(self) -> None:
+    def _build_top_toolbar(self) -> None:
         """Create the top toolbar with PDF and navigation buttons."""
         toolbar = QToolBar("PDF Controls")
         toolbar.setMovable(False)
@@ -90,6 +96,75 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.page_label)
 
         toolbar.addWidget(container)
+
+    def _build_drawing_toolbar(self) -> None:
+        """Create the left drawing toolbar and connect it to the canvas."""
+        toolbar = QToolBar("Drawing Tools")
+        toolbar.setMovable(False)
+        toolbar.setOrientation(Qt.Orientation.Vertical)
+        self.addToolBar(Qt.ToolBarArea.LeftToolBarArea, toolbar)
+
+        self.tool_action_group = QActionGroup(self)
+        self.tool_action_group.setExclusive(True)
+
+        self.select_action = self._create_tool_action("선택", "select")
+        self.pen_action = self._create_tool_action("펜", "pen")
+        self.eraser_action = self._create_tool_action("지우개", "eraser")
+
+        for action in (self.select_action, self.pen_action, self.eraser_action):
+            toolbar.addAction(action)
+
+        toolbar.addSeparator()
+
+        self.color_button = QPushButton("색상")
+        self.color_button.setToolTip("펜 색상 변경")
+        self.color_button.clicked.connect(self.choose_pen_color)
+        toolbar.addWidget(self.color_button)
+
+        self.width_label = QLabel("굵기")
+        self.width_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        toolbar.addWidget(self.width_label)
+
+        self.width_spinbox = QSpinBox()
+        self.width_spinbox.setRange(1, 30)
+        self.width_spinbox.setValue(self.canvas.pen_width)
+        self.width_spinbox.setToolTip("펜 굵기 변경")
+        self.width_spinbox.valueChanged.connect(self.canvas.set_pen_width)
+        toolbar.addWidget(self.width_spinbox)
+
+        self.pen_action.setChecked(True)
+        self.canvas.set_tool("pen")
+        self._update_color_button()
+
+    def _create_tool_action(self, label: str, tool: str) -> QAction:
+        """Create one checkable tool action for the drawing toolbar."""
+        action = QAction(label, self)
+        action.setCheckable(True)
+        action.setData(tool)
+        action.setToolTip(f"{label} 도구")
+        action.triggered.connect(
+            lambda checked=False, selected_tool=tool: self.set_tool(selected_tool)
+        )
+        self.tool_action_group.addAction(action)
+        return action
+
+    def set_tool(self, tool: str) -> None:
+        """Set the active canvas tool using clear string states."""
+        self.canvas.set_tool(tool)
+
+    def choose_pen_color(self) -> None:
+        """Open QColorDialog and apply the selected pen color."""
+        selected_color = QColorDialog.getColor(
+            QColor(self.canvas.pen_color),
+            self,
+            "펜 색상 선택",
+        )
+
+        if not selected_color.isValid():
+            return
+
+        self.canvas.set_pen_color(selected_color.name())
+        self._update_color_button()
 
     def open_pdf(self) -> None:
         """Ask the user for a PDF file and display it."""
@@ -195,6 +270,15 @@ class MainWindow(QMainWindow):
         self.store.set_page_annotations(
             self.document.current_page,
             self.canvas.annotations(),
+        )
+
+    def _update_color_button(self) -> None:
+        """Show the active pen color on the color button."""
+        self.color_button.setStyleSheet(
+            "QPushButton { "
+            f"background-color: {self.canvas.pen_color}; "
+            "border: 1px solid #555; padding: 6px; "
+            "}"
         )
 
     def _update_controls(self) -> None:
